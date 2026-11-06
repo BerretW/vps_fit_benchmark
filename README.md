@@ -67,6 +67,7 @@ Adresář uvedený v `--output` musí už existovat.
 | `--duration` | `8` | Délka každého testu v sekundách; povolený rozsah je 5–60. |
 | `--size-mb` | `512` | Velikost dočasného souboru pro testy disku v MiB; povolený rozsah je 128–4096. |
 | `--output` | `vps-fit-report` | Prefix názvů výstupních souborů. |
+| `--share` | vypnuto | Připraví veřejný JSON a text pro GitHub Issue. Nic automaticky neodesílá. |
 
 Úplný přehled argumentů:
 
@@ -102,6 +103,78 @@ Při výchozím nastavení se soubory jmenují `vps-fit-report.json` a
 Proces skončí s návratovým kódem `0`, pokud lze vypočítat celkové skóre,
 jinak s kódem `2`. Chybná konfigurace, nepodporovaný systém nebo chybějící
 závislost skončí chybou argumentů.
+
+## Sdílení výsledků a komunitní žebříček
+
+[Veřejný žebříček](RESULTS.md) obsahuje výsledky schválené vlastníkem
+repozitáře. Jde o údaje dodané uživateli, nikoli o nezávisle ověřená měření.
+
+### Odeslání výsledku
+
+Spusťte benchmark s `--share`:
+
+```bash
+python3 vps-fit-benchmark.py --duration 15 --size-mb 1024 --share
+```
+
+Stejný přepínač lze použít i při stažení z GitHubu:
+
+```bash
+set -o pipefail && curl -fsSL https://raw.githubusercontent.com/berretw/vps_fit_benchmark/main/run-vps-fit-benchmark.sh | bash -s -- --duration 15 --size-mb 1024 --share
+```
+
+1. Vedle běžných reportů vzniknou `vps-fit-report.public.json` a
+   `vps-fit-report.issue.md` (názvy respektují `--output`).
+2. **Prohlédněte si veřejný JSON před zveřejněním.** Obsahuje datum měření,
+   OS, architekturu, virtualizaci, model a počet CPU, CPU kvótu, celkovou
+   RAM, typ a kapacitu souborového systému, volné místo, nastavení testů
+   a naměřené hodnoty. Neobsahuje lokální cesty, zdroje svazků, rozhraní,
+   detaily blokových zařízení ani chybové zprávy.
+3. Otevřete odkaz vypsaný skriptem, přihlaste se k GitHubu a do nového
+   Issue vložte **celý obsah souboru s koncovkou `.issue.md`**.
+4. Zveřejněním potvrzujete souhlas se zveřejněním výsledku. Vaše GitHub
+   identita i obsah Issue budou veřejné. Běžné `.json` a `.txt` reporty
+   nepřikládejte; mohou obsahovat informace, které sdílet nechcete.
+
+Skript nepoužívá token a neprovádí žádný upload. Neúplné měření bez
+celkového skóre nelze do žebříčku odeslat; při přípravě sdílení skončí
+s kódem `2`, běžné lokální reporty však zůstanou uložené.
+
+### Nastavení a schvalování pro vlastníka repozitáře
+
+1. Nahrajte skript, workflow a ostatní změny do výchozí větve repozitáře.
+   V nastavení repozitáře musí být povolené **Issues** a **GitHub Actions**.
+2. Vytvořte štítek `benchmark-approved` v sekci Issues → Labels.
+3. Zkontrolujte report a souhlas v Issue. Jako vlastník repozitáře
+   `BerretW` přidejte tento štítek.
+4. Workflow ověří strukturu, rozsahy a verzi dat, přepočítá skóre ze
+   zdrojových měření a uloží `results/issue-<číslo>.json`. Poté aktualizuje
+   `RESULTS.md` a vytvoří commit pomocí GitHub Actions tokenu.
+
+Workflow potřebuje právo `contents: write`. Pokud pravidla organizace
+nebo ochrana výchozí větve blokují přímé commity z Actions, publikování
+selže a bude potřeba upravit pravidla nebo změnit workflow na tvorbu PR.
+Chyby jsou viditelné v záložce **Actions**; není potřeba vlastní server
+ani společný token vložený do benchmarku.
+
+Každé Issue má nejvýše jeden záznam. Úprava nebo zavření Issue ani
+odebrání štítku již uložený záznam automaticky nezmění. Pro aktualizaci
+report znovu zkontrolujte, štítek odeberte a znovu přidejte. Úprava
+obsahu mezi schválením a načtením workflow způsobí odmítnutí.
+
+Pro odstranění výsledku smažte příslušný JSON a řádek v žebříčku.
+Odstranění z aktuální větve neodstraňuje data z historie Gitu ani
+z původního Issue; nezveřejňujte citlivé údaje. Schválení ani přepočet
+skóre nepotvrzuje pravdivost uživatelem dodaných měření.
+
+### Testy
+
+Testy sdílení a sběru používají pouze standardní knihovnu Pythonu a
+neodesílají nic na GitHub:
+
+```bash
+python3 -B -m unittest discover -s tests -v
+```
 
 ## Bezpečnost a omezení
 

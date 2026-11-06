@@ -17,8 +17,13 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import urlencode
 
 VERSION = '1.0.0'
+PUBLIC_SCHEMA = 1
+ISSUES_URL = 'https://github.com/BerretW/vps_fit_benchmark/issues/new'
+FIO_TESTS = ('seqwrite_1m', 'seqread_1m', 'randwrite_4k', 'randread_4k',
+             'randwrite_fsync_4k')
 
 def command(args, timeout=30):
     try:
@@ -263,12 +268,119 @@ def rating(v):
     if v >= 50: return 'kompromis / nutne ladit'
     return 'slaby pro soubezny provoz'
 
+def validate_public_report(report):
+    def keys(value, expected):
+        if not isinstance(value, dict) or set(value) != set(expected):
+            raise ValueError('Invalid public report fields: expected ' + ', '.join(expected))
+
+    def number(value, low, high, nullable=False):
+        if value is None and nullable:
+            return
+        if type(value) not in (int, float) or not low <= value <= high or not math.isfinite(value):
+            raise ValueError('Public report contains an invalid numeric value')
+
+    def text(value):
+        if not isinstance(value, str) or not 1 <= len(value) <= 160 or any(ord(c) < 32 for c in value):
+            raise ValueError('Public report contains an invalid text value')
+
+    keys(report, ('public_schema', 'benchmark_version', 'timestamp_utc', 'settings',
+                  'system', 'measurements'))
+    if type(report['public_schema']) is not int or report['public_schema'] != PUBLIC_SCHEMA:
+        raise ValueError('Unsupported public report schema')
+    if report['benchmark_version'] != VERSION:
+        raise ValueError('Unsupported benchmark version')
+    text(report['timestamp_utc'])
+    timestamp = dt.datetime.fromisoformat(report['timestamp_utc'])
+    if timestamp.utcoffset() != dt.timedelta(0):
+        raise ValueError('Report timestamp must use UTC')
+    settings = report['settings']
+    keys(settings, ('duration', 'size_mb', 'threads'))
+    for key, low, high in [('duration', 5, 60), ('size_mb', 128, 4096), ('threads', 1, 32)]:
+        number(settings[key], low, high)
+        if type(settings[key]) is not int:
+            raise ValueError('Test settings must be integers')
+    info = report['system']
+    keys(info, ('os', 'architecture', 'virtualization', 'cpu', 'memory', 'test_volume'))
+    for key in ('os', 'architecture', 'virtualization'):
+        text(info[key])
+    keys(info['cpu'], ('model', 'logical_cpus', 'quota_cores_if_cgroup_limited'))
+    text(info['cpu']['model'])
+    number(info['cpu']['logical_cpus'], 1, 65536)
+    if type(info['cpu']['logical_cpus']) is not int:
+        raise ValueError('Logical CPU count must be an integer')
+    number(info['cpu']['quota_cores_if_cgroup_limited'], 0.01, 65536, nullable=True)
+    keys(info['memory'], ('total_gib',))
+    number(info['memory']['total_gib'], 0, 1e7)
+    keys(info['test_volume'], ('filesystem', 'total_gib', 'free_gib'))
+    text(info['test_volume']['filesystem'])
+    for key in ('total_gib', 'free_gib'):
+        number(info['test_volume'][key], 0, 1e10)
+    if info['test_volume']['free_gib'] > info['test_volume']['total_gib']:
+        raise ValueError('Free disk space exceeds total space')
+    results = report['measurements']
+    keys(results, ('cpu_single_events_s', 'cpu_multi_events_s', 'memory_write_mib_s',
+                   'cpu_steal_percent', 'fio'))
+    for key in ('cpu_single_events_s', 'cpu_multi_events_s', 'memory_write_mib_s'):
+        number(results[key], 0, 1e12, nullable=True)
+    number(results['cpu_steal_percent'], 0, 100, nullable=True)
+    keys(results['fio'], FIO_TESTS)
+    for name, value in results['fio'].items():
+        if value is None:
+            continue
+        fields = ('iops', 'mib_s', 'p99_ms', 'io_bytes')
+        if name == 'randwrite_fsync_4k':
+            fields += ('fsync_p99_ms',)
+        keys(value, fields)
+        for key in fields:
+            number(value[key], 0, 1e18, nullable=key.endswith('p99_ms'))
+    _, scores = compute_score(info, results)
+    if scores['Total'] is None:
+        raise ValueError('Incomplete benchmark cannot be submitted to the leaderboard')
+    return scores
+
+def public_report(report, duration, size_mb, threads):
+    info = report['system']
+    public = {
+        'public_schema': PUBLIC_SCHEMA, 'benchmark_version': VERSION,
+        'timestamp_utc': info['timestamp_utc'],
+        'settings': {'duration': duration, 'size_mb': size_mb, 'threads': threads},
+        'system': {
+            'os': info['os'], 'architecture': info['architecture'],
+            'virtualization': info['virtualization'],
+            'cpu': {key: info['cpu'][key] for key in
+                    ('model', 'logical_cpus', 'quota_cores_if_cgroup_limited')},
+            'memory': {'total_gib': info['memory']['total_gib']},
+            'test_volume': {key: info['test_volume'][key] for key in
+                            ('filesystem', 'total_gib', 'free_gib')}},
+        'measurements': report['measurements'],
+    }
+    validate_public_report(public)
+    return public
+
+def write_submission(report, outpath, duration, size_mb, threads):
+    public = public_report(report, duration, size_mb, threads)
+    payload = json.dumps(public, indent=2, ensure_ascii=False, allow_nan=False)
+    body = ('I consent to publishing this benchmark on GitHub and in the public leaderboard.\n'
+            'This is a self-reported result, not independently verified.\n\n'
+            '```json\n' + payload + '\n```\n')
+    public_path = outpath.with_suffix('.public.json')
+    issue_path = outpath.with_suffix('.issue.md')
+    public_path.write_text(payload + '\n', encoding='utf-8')
+    issue_path.write_text(body, encoding='utf-8')
+    # Keep the link short; GitHub's URL/body limits vary by browser and proxy.
+    url = ISSUES_URL + '?' + urlencode({'title': '[Benchmark] VPS result'})
+    print('\nPublic report: %s\nIssue body: %s' % (public_path, issue_path))
+    print('Review the public report before sharing. Paste the issue body at:\n' + url)
+    print('Nothing has been uploaded. GitHub login and manual submission are required.')
+
 def main():
     p = argparse.ArgumentParser(description='VPS suitability benchmark (Linux, sysbench + fio)')
     p.add_argument('--path', default='.', help='Directory on filesystem to benchmark (default: current directory)')
     p.add_argument('--duration', type=int, default=8, help='Seconds per test, 5-60 (default 8)')
     p.add_argument('--size-mb', type=int, default=512, help='Temporary fio file size, 128-4096 MB')
     p.add_argument('--output', default='vps-fit-report', help='Output filename prefix')
+    p.add_argument('--share', action='store_true',
+                   help='Prepare an allowlisted public report and GitHub issue body; uploads nothing')
     args = p.parse_args()
     if not sys.platform.startswith('linux'):
         p.error('Linux is required.')
@@ -364,6 +476,12 @@ def main():
     txtpath.write_text('\n'.join(lines) + '\n', encoding='utf-8')
     print('\n' + '\n'.join(lines), flush=True)
     print('\nSaved: %s and %s' % (jsonpath, txtpath))
+    if args.share:
+        try:
+            write_submission(report, outpath, args.duration, args.size_mb, threads)
+        except ValueError as exc:
+            print('Cannot prepare public submission: ' + str(exc), file=sys.stderr)
+            return 2
     return 0 if scores['Total'] is not None else 2
 
 if __name__ == '__main__':

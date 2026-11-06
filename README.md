@@ -26,6 +26,24 @@ sudo apt install -y python3 sysbench fio
 
 ## Použití
 
+### Stažení a spuštění z GitHubu
+
+Na Debianu nebo Ubuntu lze launcher stáhnout a spustit jedním příkazem.
+Doinstaluje chybějící `python3`, `sysbench` a `fio` přes `apt-get` (může
+vyžadovat heslo pro `sudo`) a předá launcheru argumenty benchmarku:
+
+```bash
+set -o pipefail && curl -fsSL https://raw.githubusercontent.com/berretw/vps_fit_benchmark/main/run-vps-fit-benchmark.sh | bash -s -- --path /var/lib --duration 15 --size-mb 1024
+```
+
+Tento příkaz spouští kód stažený z GitHubu. Před spuštěním si můžete
+[launcher prohlédnout](https://github.com/berretw/vps_fit_benchmark/blob/main/run-vps-fit-benchmark.sh)
+a ověřit, že URL odpovídá repozitáři, kterému důvěřujete. Launcher
+automaticky instaluje závislosti pouze na Debianu/Ubuntu; na ostatních
+distribucích vypíše chybějící balíčky.
+
+### Lokální spuštění
+
 Skript spusťte jako uživatel, který má právo zapisovat do testovaného
 adresáře. Například:
 
